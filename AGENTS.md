@@ -26,7 +26,7 @@ This repository contains the tailored, high-impact mini-portfolio website for **
   - 3 Discipline Cards:
     1. First card: **Graphic Design** (horizon X: 26%, tether offset: 52px)
     2. Center card: **Website / Landing Pages / AI** (horizon X: 50%, tether offset: 84px, featured AI violet border/glow)
-    3. Last card: **Motion** (horizon X: 74%, tether offset: 52px)
+    3. Last card: **Motion and Video** (horizon X: 74%, tether offset: 48px)
   - Card Styling (`src/App.css`): Expanded tiles with `width: 340px`, `min-height: 144px`, generous `padding: 22px 28px`, centered bold title, and unified GoComet Electric Blue (`#0054ff`) pill CTA (`Explore Work ↗`).
   - Laser Tethers: Dual-layer vertical laser line with travelling photon animation (`tether-photon`), descending from the bottom of each card directly into the glowing contact node (`contact-dot` + dual ping rings + halo) seated squarely on the illuminated cyan atmospheric rim of the globe.
   - Micro-animation: `@keyframes float-subtle` (`0px` to `-3px`), keeping cards grounded on the globe.

@@ -37,7 +37,7 @@ export default function GlobeBeacons({ onNavigate, onHoverNode, nodePositions })
     },
     {
       id: 'motion',
-      title: 'Motion',
+      title: 'Motion and Video',
       ctaText: 'Explore Work',
       accentColor: '#0054ff',
       posClass: 'beacon-right',

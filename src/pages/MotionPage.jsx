@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import OceanBackground from '../components/OceanBackground';
@@ -10,23 +10,26 @@ import OceanBackground from '../components/OceanBackground';
  */
 const MOTION_VIDEOS = [
   {
-    id: 'hrwest-video',
-    title: 'HRWest Video',
+    id: 'hrwest-2027-promo',
+    title: 'HRWest 2027 Promo',
     embedUrl: 'https://www.youtube.com/embed/n8xlsyFHBnU?si=i-NTHS-HEzUGxAQX',
   },
   {
-    id: 'research-video-1',
-    title: 'Research Video',
+    id: 'future-of-human-experience-2025',
+    title: "HR.com's Future of Human Experience 2025 Research video",
     embedUrl: 'https://www.youtube.com/embed/W2sKRVnU9tM?si=OQG3qePQnp-UVyEy',
   },
   {
-    id: 'research-video-2',
-    title: 'Research Video',
+    id: 'future-of-performance-management-2024-25',
+    title: "HR.com's Future of performance management 2024-25 video",
     embedUrl: 'https://www.youtube.com/embed/8M-X17bcvtI?si=v4xWhm_0XgybYXWG',
   },
 ];
 
 export default function MotionPage({ onNavigate }) {
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
   return (
     <div className="page-wrapper page-motion-dark">
       {/* 1. Fixed Ocean Background with Animated Waves & Continuous Cargo Ships */}
