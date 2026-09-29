@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ZoomIn,
   ZoomOut,
-  RotateCcw,
   Loader2,
   ExternalLink
 } from 'lucide-react';
@@ -14,6 +13,152 @@ import {
 // Configure PDF.js worker using the rock-solid v3.11 worker
 if (typeof window !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+}
+
+/**
+ * Individual PDF Page renderer component
+ * Lazy-loads and renders on high-DPI canvas with layout placeholder
+ */
+function PdfPageItem({ doc, pageNum, scale, containerRef, numPages }) {
+  const canvasRef = useRef(null);
+  const wrapperRef = useRef(null);
+  const renderTaskRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [isRendered, setIsRendered] = useState(false);
+  const [shouldRender, setShouldRender] = useState(pageNum <= 2); // First 2 pages render immediately
+
+  // 1. Calculate page aspect ratio & dimensions for zero-shift layout
+  useEffect(() => {
+    let isMounted = true;
+    if (!doc) return;
+
+    doc.getPage(pageNum).then((page) => {
+      if (!isMounted) return;
+      const viewport = page.getViewport({ scale });
+      setDimensions({
+        width: Math.floor(viewport.width),
+        height: Math.floor(viewport.height),
+      });
+    }).catch((err) => {
+      console.warn(`Error getting page ${pageNum} dimensions:`, err);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [doc, pageNum, scale]);
+
+  // 2. Intersection observer to trigger rendering when entering/near viewport (600px buffer)
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el || !containerRef.current) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setShouldRender(true);
+          }
+        });
+      },
+      {
+        root: containerRef.current,
+        rootMargin: '600px 0px 600px 0px',
+        threshold: 0.01,
+      }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [containerRef]);
+
+  // 3. Render page onto Canvas
+  useEffect(() => {
+    let isMounted = true;
+    if (!doc || !shouldRender || !canvasRef.current) return;
+
+    const render = async () => {
+      try {
+        const page = await doc.getPage(pageNum);
+        if (!isMounted) return;
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+
+        if (renderTaskRef.current) {
+          try {
+            renderTaskRef.current.cancel();
+          } catch (e) {}
+        }
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const viewport = page.getViewport({ scale });
+
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const renderTask = page.render({
+          canvasContext: ctx,
+          viewport: viewport,
+        });
+
+        renderTaskRef.current = renderTask;
+        await renderTask.promise;
+        if (isMounted) setIsRendered(true);
+      } catch (err) {
+        if (err?.name !== 'RenderingCancelledException') {
+          console.error(`Page ${pageNum} render error:`, err);
+        }
+      }
+    };
+
+    render();
+
+    return () => {
+      isMounted = false;
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch (e) {}
+      }
+    };
+  }, [doc, pageNum, scale, shouldRender]);
+
+  return (
+    <div
+      id={`pdf-page-item-${pageNum}`}
+      data-page-num={pageNum}
+      ref={wrapperRef}
+      className="pdf-page-wrapper"
+      style={{
+        width: dimensions.width ? `${dimensions.width}px` : '100%',
+        minHeight: dimensions.height ? `${dimensions.height}px` : '400px',
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        className="pdf-render-canvas"
+        style={{
+          opacity: isRendered ? 1 : 0,
+          transition: 'opacity 0.22s ease-in',
+        }}
+      />
+      {!isRendered && (
+        <div className="pdf-page-placeholder" style={{ minHeight: dimensions.height || 400 }}>
+          <Loader2 size={24} className="pdf-spinner" />
+          <span>Page {pageNum}</span>
+        </div>
+      )}
+      <div className="pdf-page-corner-badge">
+        {pageNum} / {numPages}
+      </div>
+    </div>
+  );
 }
 
 export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
@@ -24,9 +169,9 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
   const [isLoading, setIsLoading] = useState(false);
   const [useIframeFallback, setUseIframeFallback] = useState(false);
 
-  const canvasRef = useRef(null);
   const containerRef = useRef(null);
-  const renderTaskRef = useRef(null);
+  const isProgrammaticScroll = useRef(false);
+  const scrollTimeoutRef = useRef(null);
 
   // 1. Load document with PDF.js, with automatic fallback
   useEffect(() => {
@@ -72,59 +217,48 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
     };
   }, [isOpen, pdfUrl]);
 
-  // 2. Render page onto Canvas
-  const renderPage = useCallback(
-    async (pageNum, currentScale) => {
-      if (!pdfDoc || !canvasRef.current || useIframeFallback) return;
+  // 2. Smooth programmatic scroll to specific page
+  const scrollToPage = useCallback((targetPageNum) => {
+    if (!numPages) return;
+    const pageClamped = Math.max(1, Math.min(targetPageNum, numPages));
+    const el = document.getElementById(`pdf-page-item-${pageClamped}`);
+    if (el && containerRef.current) {
+      isProgrammaticScroll.current = true;
+      setCurrentPage(pageClamped);
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-      try {
-        const page = await pdfDoc.getPage(pageNum);
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-
-        // Cancel previous render task if active
-        if (renderTaskRef.current) {
-          try {
-            renderTaskRef.current.cancel();
-          } catch (e) {}
-        }
-
-        const dpr = window.devicePixelRatio || 1;
-        const viewport = page.getViewport({ scale: currentScale });
-
-        // Set dimensions for high-DPI Retina displays
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport,
-        };
-
-        const task = page.render(renderContext);
-        renderTaskRef.current = task;
-        await task.promise;
-      } catch (err) {
-        if (err?.name !== 'RenderingCancelledException') {
-          console.error('Page render error:', err);
-        }
-      }
-    },
-    [pdfDoc, useIframeFallback]
-  );
-
-  useEffect(() => {
-    if (pdfDoc && currentPage && !useIframeFallback) {
-      renderPage(currentPage, scale);
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = setTimeout(() => {
+        isProgrammaticScroll.current = false;
+      }, 600);
     }
-  }, [pdfDoc, currentPage, scale, renderPage, useIframeFallback]);
+  }, [numPages]);
 
-  // 3. Keyboard shortcuts
+  // 3. Scroll tracking: updates top bar page counter in real-time as user scrolls naturally
+  const handleScroll = useCallback(() => {
+    if (!containerRef.current || isProgrammaticScroll.current || numPages <= 1) return;
+    const container = containerRef.current;
+    const scrollTop = container.scrollTop;
+    const containerHeight = container.clientHeight;
+    // Track page at the focus point (35% down the viewport)
+    const targetPoint = scrollTop + containerHeight * 0.35;
+
+    const pageElements = container.querySelectorAll('.pdf-page-wrapper');
+    for (let i = 0; i < pageElements.length; i++) {
+      const el = pageElements[i];
+      const top = el.offsetTop;
+      const height = el.offsetHeight;
+      if (targetPoint >= top && targetPoint <= top + height) {
+        const pNum = Number(el.getAttribute('data-page-num'));
+        if (pNum && pNum !== currentPage) {
+          setCurrentPage(pNum);
+        }
+        break;
+      }
+    }
+  }, [currentPage, numPages]);
+
+  // 4. Keyboard shortcuts for navigation and exit
   useEffect(() => {
     if (!isOpen) return;
 
@@ -132,9 +266,17 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
       if (e.key === 'Escape') {
         onClose();
       } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        setCurrentPage((prev) => Math.min(prev + 1, numPages || 1));
+        e.preventDefault();
+        scrollToPage(currentPage + 1);
       } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        setCurrentPage((prev) => Math.max(prev - 1, 1));
+        e.preventDefault();
+        scrollToPage(currentPage - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        scrollToPage(1);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        scrollToPage(numPages);
       }
     };
 
@@ -144,21 +286,20 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
     return () => {
       document.body.style.overflow = '';
       window.removeEventListener('keydown', handleKeyDown);
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
     };
-  }, [isOpen, numPages, onClose]);
+  }, [isOpen, numPages, currentPage, scrollToPage, onClose]);
 
-  // 4. Page handlers
+  // 5. Button handlers for Page Navigation
   const handlePrevPage = () => {
-    setCurrentPage((prev) => Math.max(prev - 1, 1));
-    if (containerRef.current) containerRef.current.scrollTop = 0;
+    scrollToPage(currentPage - 1);
   };
 
   const handleNextPage = () => {
-    setCurrentPage((prev) => Math.min(prev + 1, numPages));
-    if (containerRef.current) containerRef.current.scrollTop = 0;
+    scrollToPage(currentPage + 1);
   };
 
-  // 5. Zoom handlers
+  // 6. Zoom handlers
   const handleZoomIn = () => {
     setScale((prev) => Math.min(Math.round((prev + 0.15) * 100) / 100, 2.5));
   };
@@ -183,7 +324,7 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
             <span className="pdf-header-title">{title}</span>
           </div>
 
-          {/* Center: Clean Page Number Controls (no print/drive/edit clutter) */}
+          {/* Center: Clean Page Number Controls with Both Scroll & Click support */}
           {!useIframeFallback && numPages > 0 && (
             <div className="pdf-page-controls">
               <button
@@ -191,7 +332,8 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
                 className="pdf-ctrl-btn"
                 onClick={handlePrevPage}
                 disabled={currentPage <= 1}
-                title="Previous Page (Left Arrow)"
+                title="Previous Page (Left Arrow / PageUp)"
+                aria-label="Previous Page"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -205,7 +347,8 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
                 className="pdf-ctrl-btn"
                 onClick={handleNextPage}
                 disabled={currentPage >= numPages}
-                title="Next Page (Right Arrow)"
+                title="Next Page (Right Arrow / PageDown)"
+                aria-label="Next Page"
               >
                 <ChevronRight size={16} />
               </button>
@@ -222,6 +365,7 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
                   onClick={handleZoomOut}
                   disabled={scale <= 0.6}
                   title="Zoom Out"
+                  aria-label="Zoom Out"
                 >
                   <ZoomOut size={15} />
                 </button>
@@ -230,7 +374,8 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
                   type="button"
                   className="pdf-zoom-val-btn"
                   onClick={handleResetZoom}
-                  title="Reset Zoom to 100%"
+                  title="Reset Zoom to 115%"
+                  aria-label="Reset Zoom"
                 >
                   {Math.round(scale * 100)}%
                 </button>
@@ -241,6 +386,7 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
                   onClick={handleZoomIn}
                   disabled={scale >= 2.5}
                   title="Zoom In"
+                  aria-label="Zoom In"
                 >
                   <ZoomIn size={15} />
                 </button>
@@ -271,8 +417,12 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
           </div>
         </div>
 
-        {/* PDF VIEWPORT (Expansive 98vw reading canvas) */}
-        <div className="pdf-canvas-container" ref={containerRef}>
+        {/* PDF VIEWPORT (Continuous Scroll Stream + Direct Page Jumps) */}
+        <div
+          className="pdf-canvas-container"
+          ref={containerRef}
+          onScroll={handleScroll}
+        >
           {isLoading && (
             <div className="pdf-loader-wrap">
               <Loader2 size={32} className="pdf-spinner" />
@@ -287,11 +437,18 @@ export default function PdfViewerModal({ isOpen, pdfUrl, title, onClose }) {
               className="pdf-iframe-clean"
             />
           ) : (
-            <canvas
-              ref={canvasRef}
-              className="pdf-render-canvas"
-              style={{ display: isLoading ? 'none' : 'block' }}
-            />
+            <div className="pdf-pages-list">
+              {Array.from({ length: numPages }, (_, index) => index + 1).map((pageNum) => (
+                <PdfPageItem
+                  key={`${pdfUrl}-page-${pageNum}`}
+                  doc={pdfDoc}
+                  pageNum={pageNum}
+                  scale={scale}
+                  containerRef={containerRef}
+                  numPages={numPages}
+                />
+              ))}
+            </div>
           )}
         </div>
       </div>
